@@ -2218,23 +2218,53 @@ fn load_savol_profile() {
 }
 
 pub fn load_custom_client() {
+    /*
+     * SAVOL:
+     *
+     * Загружаем встроенный корпоративный профиль до чтения
+     * стандартного custom.txt.
+     */
     #[cfg(target_os = "windows")]
     load_savol_profile();
 
+    /*
+     * Стандартный debug-механизм RustDesk.
+     */
     #[cfg(debug_assertions)]
     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
         read_custom_client(data.trim());
         return;
+    }
+
+    /*
+     * Получаем каталог, в котором находится текущий executable.
+     *
+     * Этот блок был случайно удалён при нашей предыдущей правке.
+     */
+    let Some(path) =
+        std::env::current_exe().map_or(None, |x| x.parent().map(|x| x.to_path_buf()))
+    else {
+        return;
     };
+
+    /*
+     * На macOS custom.txt располагается внутри Resources.
+     */
     #[cfg(target_os = "macos")]
     let path = path.join("../Resources");
+
+    /*
+     * Для Windows/Linux ищем custom.txt рядом с executable.
+     */
     let path = path.join("custom.txt");
+
     if path.is_file() {
         let Ok(data) = std::fs::read_to_string(&path) else {
             log::error!("Failed to read custom client config");
             return;
         };
-        read_custom_client(&data.trim());
+
+        read_custom_client(data.trim());
     }
 }
 
