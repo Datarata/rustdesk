@@ -6,39 +6,117 @@ on:
 permissions:
   contents: read
 
+# Если нажать Run несколько раз, предыдущая незавершённая сборка
+# этой же ветки будет отменена.
+concurrency:
+  group: savol-rustdesk-windows-x64-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
+  # ------------------------------------------------------------
+  # SAVOL BUILD
+  # ------------------------------------------------------------
+
+  SOURCE_REF: "savol-1.4.9"
+  VERSION: "1.4.9"
+
+  # ------------------------------------------------------------
+  # RUSTDESK 1.4.9 TOOLCHAIN
+  # ------------------------------------------------------------
+
   RUST_VERSION: "1.75"
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
 
+  CARGO_EXPAND_VERSION: "1.0.95"
+  FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
+
+  # RustDesk 1.4.9 / vcpkg 2025.08.27.
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
 
-  # Нужен GitHub Actions cache для vcpkg.
+  # GitHub Actions binary cache для vcpkg.
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
+
 jobs:
-  # ------------------------------------------------------------
-  # Flutter/Rust bridge
-  # ------------------------------------------------------------
+
+  # ============================================================
+  # 1. GENERATE FLUTTER <-> RUST BRIDGE
+  # ============================================================
 
   generate-bridge:
+    name: Generate Flutter/Rust bridge
+
     runs-on: ubuntu-22.04
 
+    timeout-minutes: 30
+
     steps:
-      - name: Checkout source
+
+      # --------------------------------------------------------
+      # Checkout именно нашей ветки.
+      #
+      # Это принципиально:
+      # workflow никогда не должен случайно собирать master.
+      # --------------------------------------------------------
+
+      - name: Checkout Savol RustDesk 1.4.9
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: savol-1.4.9
           submodules: recursive
+          fetch-depth: 1
+
+
+      # --------------------------------------------------------
+      # Показываем, что реально получили нужную ревизию.
+      # --------------------------------------------------------
+
+      - name: Verify source revision
+        shell: bash
+        run: |
+          set -e
+
+          echo "============================================"
+          echo " Git branch"
+          echo "============================================"
+
+          git branch --show-current
+
+          echo
+          echo "============================================"
+          echo " Git commit"
+          echo "============================================"
+
+          git log -1 --oneline
+
+          echo
+          echo "============================================"
+          echo " vcpkg baseline"
+          echo "============================================"
+
+          grep '"baseline"' vcpkg.json
+
+
+      # --------------------------------------------------------
+      # Системные зависимости bridge generator.
+      # --------------------------------------------------------
 
       - name: Install prerequisites
+        shell: bash
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
+            ca-certificates \
             clang \
             cmake \
             curl \
             gcc \
             g++ \
+            git \
             libclang-dev \
             libgtk-3-dev \
             llvm-dev \
@@ -47,45 +125,94 @@ jobs:
             pkg-config \
             wget
 
-      - name: Install Rust
+
+      # --------------------------------------------------------
+      # Rust 1.75 — тот же toolchain, что у RustDesk 1.4.9.
+      # --------------------------------------------------------
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: "1.75"
+          targets: x86_64-unknown-linux-gnu
           components: rustfmt
 
-      - name: Install Flutter 3.22.3 for bridge
+
+      # --------------------------------------------------------
+      # Кэш cargo.
+      # --------------------------------------------------------
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          prefix-key: savol-bridge-ubuntu-22.04
+
+
+      # --------------------------------------------------------
+      # Flutter 3.22.3 используется именно для генерации
+      # bridge в стандартной x64 ветке RustDesk 1.4.9.
+      # --------------------------------------------------------
+
+      - name: Install Flutter for bridge
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           channel: stable
           flutter-version: "3.22.3"
           cache: true
 
-      - name: Install bridge generator
+
+      # --------------------------------------------------------
+      # flutter_rust_bridge_codegen.
+      # --------------------------------------------------------
+
+      - name: Install Flutter Rust bridge tools
         shell: bash
         run: |
-          cargo install cargo-expand \
-            --version 1.0.95 \
+          set -e
+
+          cargo install \
+            cargo-expand \
+            --version "${CARGO_EXPAND_VERSION}" \
             --locked
 
-          cargo install flutter_rust_bridge_codegen \
-            --version 1.80.1 \
+          cargo install \
+            flutter_rust_bridge_codegen \
+            --version "${FLUTTER_RUST_BRIDGE_VERSION}" \
             --features uuid \
             --locked
 
-      - name: Generate bridge
+
+      # --------------------------------------------------------
+      # RustDesk 1.4.9 официально делает downgrade extended_text
+      # при bridge generation на Flutter 3.22.3.
+      # --------------------------------------------------------
+
+      - name: Prepare Flutter dependencies
         shell: bash
         run: |
-          # RustDesk 1.4.9 использует такой downgrade
-          # для bridge на Flutter 3.22.3.
+          set -e
+
           sed -i \
-            's/extended_text: 14.0.0/extended_text: 13.0.0/g' \
+            -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' \
             flutter/pubspec.yaml
 
           pushd flutter
+
           flutter pub get
+
           popd
 
-          flutter_rust_bridge_codegen \
+
+      # --------------------------------------------------------
+      # Генерируем Rust <-> Dart bridge.
+      # --------------------------------------------------------
+
+      - name: Generate Flutter Rust bridge
+        shell: bash
+        run: |
+          set -e
+
+          ~/.cargo/bin/flutter_rust_bridge_codegen \
             --rust-input ./src/flutter_ffi.rs \
             --dart-output ./flutter/lib/generated_bridge.dart \
             --c-output ./flutter/macos/Runner/bridge_generated.h
@@ -94,10 +221,16 @@ jobs:
             ./flutter/macos/Runner/bridge_generated.h \
             ./flutter/ios/Runner/bridge_generated.h
 
-      - name: Upload bridge
+
+      # --------------------------------------------------------
+      # Передаём bridge Windows job.
+      # --------------------------------------------------------
+
+      - name: Upload bridge artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: bridge-artifact
+          name: savol-bridge-artifact
+          retention-days: 1
           path: |
             ./src/bridge_generated.rs
             ./src/bridge_generated.io.rs
@@ -107,28 +240,48 @@ jobs:
             ./flutter/ios/Runner/bridge_generated.h
 
 
-  # ------------------------------------------------------------
-  # RustDeskTempTopMostWindow x64
-  # ------------------------------------------------------------
+  # ============================================================
+  # 2. BUILD RustDeskTempTopMostWindow x64
+  # ============================================================
 
   build-topmost-x64:
+    name: Build TopMost helper x64
+
     runs-on: windows-2022
 
+    timeout-minutes: 15
+
     steps:
-      - name: Add MSBuild
+
+      # --------------------------------------------------------
+      # MSBuild.
+      # --------------------------------------------------------
+
+      - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce
 
-      - name: Clone helper
+
+      # --------------------------------------------------------
+      # Этот helper является частью официальной Windows сборки
+      # RustDesk.
+      # --------------------------------------------------------
+
+      - name: Clone RustDeskTempTopMostWindow
         shell: powershell
         run: |
           git clone `
             https://github.com/rustdesk-org/RustDeskTempTopMostWindow `
             RustDeskTempTopMostWindow
 
-      - name: Build helper
+
+      # --------------------------------------------------------
+      # Фиксируем тот же commit, что официальный RustDesk 1.4.9.
+      # --------------------------------------------------------
+
+      - name: Build RustDeskTempTopMostWindow
         shell: powershell
         run: |
-          cd RustDeskTempTopMostWindow
+          Set-Location RustDeskTempTopMostWindow
 
           git checkout `
             ecd8d6a139eee76845ea66423fb739af450fda90
@@ -139,27 +292,42 @@ jobs:
             -p:Platform=x64 `
             /p:TargetVersion=Windows10
 
-      - name: Upload helper
+
+      # --------------------------------------------------------
+      # Передаём DLL основной Windows сборке.
+      # --------------------------------------------------------
+
+      - name: Upload TopMost helper
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: topmostwindow-artifacts-x64
+          name: savol-topmostwindow-x64
+          retention-days: 1
           path: |
-            RustDeskTempTopMostWindow/WindowInjection/x64/Release/WindowInjection.dll
+            ./RustDeskTempTopMostWindow/WindowInjection/x64/Release/WindowInjection.dll
 
 
-  # ------------------------------------------------------------
-  # RustDesk Windows x64
-  # ------------------------------------------------------------
+  # ============================================================
+  # 3. BUILD RUSTDESK WINDOWS x64
+  # ============================================================
 
   build-windows-x64:
+    name: Build Savol RustDesk Windows x64
+
     needs:
       - generate-bridge
       - build-topmost-x64
 
     runs-on: windows-2022
 
+    timeout-minutes: 90
+
     steps:
-      - name: Export GitHub cache environment
+
+      # --------------------------------------------------------
+      # VCPKG x-gha cache требует эти runtime variables.
+      # --------------------------------------------------------
+
+      - name: Export GitHub Actions cache environment
         uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
         with:
           script: |
@@ -173,33 +341,126 @@ jobs:
               process.env.ACTIONS_RUNTIME_TOKEN || ''
             );
 
-      - name: Checkout source
+
+      # --------------------------------------------------------
+      # КРИТИЧЕСКИ ВАЖНО:
+      #
+      # checkout всегда идёт именно из savol-1.4.9.
+      #
+      # Поэтому даже если workflow случайно запустить из master,
+      # BUILD исходники всё равно будут savol-1.4.9.
+      # --------------------------------------------------------
+
+      - name: Checkout Savol RustDesk 1.4.9
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: savol-1.4.9
           submodules: recursive
+          fetch-depth: 1
 
-      - name: Restore bridge
+
+      # --------------------------------------------------------
+      # Диагностика checkout.
+      # --------------------------------------------------------
+
+      - name: Verify source revision
+        shell: powershell
+        run: |
+          Write-Host "============================================"
+          Write-Host " Git branch"
+          Write-Host "============================================"
+
+          git branch --show-current
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host " Git commit"
+          Write-Host "============================================"
+
+          git log -1 --oneline
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host " vcpkg.json"
+          Write-Host "============================================"
+
+          Get-Content .\vcpkg.json
+
+
+      # --------------------------------------------------------
+      # FAIL FAST:
+      #
+      # Если каким-то образом checkout будет не от RustDesk 1.4.9,
+      # сборка остановится здесь, а не спустя 20 минут.
+      # --------------------------------------------------------
+
+      - name: Verify RustDesk 1.4.9 vcpkg baseline
+        shell: powershell
+        run: |
+          $Expected = '120deac3062162151622ca4860575a33844ba10b'
+
+          $Manifest = Get-Content `
+            '.\vcpkg.json' `
+            -Raw |
+            ConvertFrom-Json
+
+          $Actual = `
+            $Manifest.'vcpkg-configuration'.'default-registry'.baseline
+
+          Write-Host "Expected baseline: $Expected"
+          Write-Host "Actual baseline:   $Actual"
+
+          if ($Actual -ne $Expected) {
+              throw "Wrong RustDesk source revision: vcpkg baseline mismatch."
+          }
+
+          Write-Host "vcpkg baseline OK."
+
+
+      # --------------------------------------------------------
+      # Получаем bridge, созданный первым job.
+      # --------------------------------------------------------
+
+      - name: Restore Flutter Rust bridge
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: bridge-artifact
+          name: savol-bridge-artifact
           path: ./
 
-      - name: Install LLVM
+
+      # --------------------------------------------------------
+      # LLVM 15.0.6.
+      # --------------------------------------------------------
+
+      - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
         with:
-          version: ${{ env.LLVM_VERSION }}
+          version: "15.0.6"
 
-      - name: Install Flutter
+
+      # --------------------------------------------------------
+      # Основная Windows Flutter версия RustDesk 1.4.9.
+      # --------------------------------------------------------
+
+      - name: Install Flutter 3.24.5
+        id: flutter
         uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
         with:
           channel: stable
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: "3.24.5"
           architecture: x64
 
-      - name: Replace Flutter engine
+
+      # --------------------------------------------------------
+      # RustDesk использует собственный patched Flutter engine
+      # для Windows x64.
+      # --------------------------------------------------------
+
+      - name: Replace Flutter engine with RustDesk engine
         shell: powershell
         run: |
           flutter doctor -v
+
           flutter precache --windows
 
           Invoke-WebRequest `
@@ -210,53 +471,135 @@ jobs:
             -Path "windows-x64-release.zip" `
             -DestinationPath "windows-x64-release"
 
+          $FlutterRoot = "${{ steps.flutter.outputs['CACHE-PATH'] }}"
+
+          Write-Host "Flutter root: $FlutterRoot"
+
+          $Destination = `
+            Join-Path `
+              $FlutterRoot `
+              "bin\cache\artifacts\engine\windows-x64-release"
+
           Copy-Item `
-            -Path "windows-x64-release\*" `
-            -Destination "C:\hostedtoolcache\windows\flutter\stable-${{ env.FLUTTER_VERSION }}-x64\bin\cache\artifacts\engine\windows-x64-release\" `
+            -Path ".\windows-x64-release\*" `
+            -Destination $Destination `
             -Recurse `
             -Force
+
+
+      # --------------------------------------------------------
+      # Патч Flutter, используемый официальным RustDesk 1.4.9.
+      # --------------------------------------------------------
 
       - name: Patch Flutter
         shell: bash
         run: |
+          set -e
+
+          FLUTTER_ROOT="$(dirname "$(dirname "$(which flutter)")")"
+
           cp \
             .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff \
-            $(dirname $(dirname $(which flutter)))
+            "${FLUTTER_ROOT}/"
 
-          cd $(dirname $(dirname $(which flutter)))
+          cd "${FLUTTER_ROOT}"
 
-          git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          git apply \
+            flutter_3.24.4_dropdown_menu_enableFilter.diff
 
-      - name: Install Rust
+
+      # --------------------------------------------------------
+      # Rust 1.75 + Windows MSVC x64.
+      # --------------------------------------------------------
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: "1.75"
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
-      - name: Rust cache
+
+      # --------------------------------------------------------
+      # Rust/Cargo cache.
+      # --------------------------------------------------------
+
+      - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          prefix-key: windows-2022
+          prefix-key: savol-rustdesk-windows-x64
+
+
+      # --------------------------------------------------------
+      # vcpkg.
+      #
+      # Commit должен совпадать с baseline из vcpkg.json.
+      # --------------------------------------------------------
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
         with:
           vcpkgDirectory: C:\vcpkg
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          vcpkgGitCommitId: 120deac3062162151622ca4860575a33844ba10b
           doNotCache: false
+
+
+      # --------------------------------------------------------
+      # Устанавливаем зависимости RustDesk.
+      #
+      # Если vcpkg падает, выводим все build logs.
+      # --------------------------------------------------------
 
       - name: Install vcpkg dependencies
         shell: bash
         env:
           VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         run: |
-          $VCPKG_ROOT/vcpkg \
+          set -e
+
+          if ! "$VCPKG_ROOT/vcpkg" \
             install \
             --triplet x64-windows-static \
             --x-install-root="$VCPKG_ROOT/installed"
+          then
+            echo
+            echo "============================================"
+            echo " VCPKG BUILD LOGS"
+            echo "============================================"
 
-      - name: Build RustDesk x64
+            find "${VCPKG_ROOT}/" \
+              -name "*.log" |
+            while read -r log_file
+            do
+              echo
+              echo "===== ${log_file} ====="
+              cat "${log_file}"
+            done
+
+            exit 1
+          fi
+
+          echo
+          echo "============================================"
+          echo " FFmpeg build log"
+          echo "============================================"
+
+          head \
+            -n 100 \
+            "${VCPKG_ROOT}/buildtrees/ffmpeg/build-x64-windows-static-rel-out.log" \
+            || true
+
+
+      # --------------------------------------------------------
+      # Основная компиляция RustDesk.
+      #
+      # --portable
+      # --flutter
+      # --hwcodec -> аппаратные кодеки
+      # --vram    -> аппаратный GPU/VRAM path
+      # --------------------------------------------------------
+
+      - name: Build Savol RustDesk
         shell: powershell
         run: |
           python3 `
@@ -271,7 +614,14 @@ jobs:
             ".\flutter\build\windows\x64\runner\Release" `
             ".\rustdesk"
 
-      - name: Download usbmmidd
+
+      # --------------------------------------------------------
+      # Virtual display driver.
+      #
+      # RustDesk включает его в официальный Windows bundle.
+      # --------------------------------------------------------
+
+      - name: Add virtual display driver
         shell: powershell
         run: |
           Invoke-WebRequest `
@@ -279,32 +629,157 @@ jobs:
             -OutFile "usbmmidd_v2.zip"
 
           Expand-Archive `
-            "usbmmidd_v2.zip" `
+            -Path "usbmmidd_v2.zip" `
             -DestinationPath "."
 
           Remove-Item `
             ".\usbmmidd_v2\Win32" `
             -Recurse `
-            -Force
+            -Force `
+            -ErrorAction SilentlyContinue
 
           Remove-Item `
             ".\usbmmidd_v2\deviceinstaller64.exe", `
             ".\usbmmidd_v2\deviceinstaller.exe", `
             ".\usbmmidd_v2\usbmmidd.bat" `
+            -Force `
             -ErrorAction SilentlyContinue
 
           Move-Item `
             ".\usbmmidd_v2" `
             ".\rustdesk\usbmmidd_v2"
 
+
+      # --------------------------------------------------------
+      # Restore TopMost Window helper.
+      # --------------------------------------------------------
+
       - name: Restore TopMost helper
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: topmostwindow-artifacts-x64
+          name: savol-topmostwindow-x64
           path: ./rustdesk
 
-      - name: Upload RustDesk Windows x64
+
+      # --------------------------------------------------------
+      # Runner.res нужен portable packer.
+      # --------------------------------------------------------
+
+      - name: Find Runner.res
+        shell: bash
+        run: |
+          set -e
+
+          runner_res="$(find . -name "Runner.res" | head -n 1)"
+
+          if [[ -z "${runner_res}" ]]; then
+            echo "Runner.res not found."
+            exit 1
+          fi
+
+          echo "Runner.res found:"
+          echo "${runner_res}"
+
+          cp \
+            "${runner_res}" \
+            ./libs/portable/Runner.res
+
+
+      # --------------------------------------------------------
+      # Сохраняем raw build.
+      #
+      # Это полезно для диагностики, если portable packer
+      # когда-нибудь сломается.
+      # --------------------------------------------------------
+
+      - name: Prepare raw build
+        shell: powershell
+        run: |
+          New-Item `
+            -ItemType Directory `
+            -Path ".\dist\raw" `
+            -Force |
+            Out-Null
+
+          Copy-Item `
+            ".\rustdesk\*" `
+            ".\dist\raw\" `
+            -Recurse `
+            -Force
+
+
+      # --------------------------------------------------------
+      # Создаём один self-contained EXE.
+      #
+      # Получится:
+      #
+      # Savol-RustDesk-1.4.9-x86_64.exe
+      # --------------------------------------------------------
+
+      - name: Build self-extracted executable
+        shell: bash
+        run: |
+          set -e
+
+          # Как в официальной сборке RustDesk.
+          sed -i '/dpiAware/d' res/manifest.xml
+
+          pushd ./libs/portable
+
+          pip3 install \
+            -r requirements.txt
+
+          python3 \
+            ./generate.py \
+            -f ../../rustdesk/ \
+            -o . \
+            -e ../../rustdesk/rustdesk.exe
+
+          popd
+
+          mkdir -p ./dist
+
+          mv \
+            ./target/release/rustdesk-portable-packer.exe \
+            ./dist/Savol-RustDesk-1.4.9-x86_64.exe
+
+
+      # --------------------------------------------------------
+      # Показываем итог.
+      # --------------------------------------------------------
+
+      - name: Show build output
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host " SAVOL RUSTDESK BUILD COMPLETE"
+          Write-Host "============================================"
+          Write-Host ""
+
+          Get-ChildItem `
+            ".\dist" `
+            -Recurse |
+            Select-Object `
+              FullName, `
+              Length
+
+
+      # --------------------------------------------------------
+      # Один итоговый GitHub Artifact.
+      #
+      # Внутри:
+      #
+      # Savol-RustDesk-1.4.9-x86_64.exe
+      # raw/
+      # --------------------------------------------------------
+
+      - name: Upload Savol RustDesk Windows x64
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Savol-RustDesk-Windows-x64
-          path: ./rustdesk
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            ./dist/Savol-RustDesk-1.4.9-x86_64.exe
+            ./dist/raw/
