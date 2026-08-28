@@ -434,14 +434,25 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             return None;
         } else if args[0] == "--password" {
-            if is_cli_setting_change_disabled() {
-                println!("Settings are disabled!");
-                return None;
-            }
-            if config::Config::is_disable_change_permanent_password() {
-                println!("Changing permanent password is disabled!");
-                return None;
-            }
+            /*
+             * SAVOL:
+             *
+             * Изменение permanent password через GUI остаётся запрещено
+             * встроенной политикой:
+             *
+             * disable-change-permanent-password=Y
+             *
+             * Но IT должен иметь возможность задать пароль при deployment
+             * через elevated CLI.
+             *
+             * Поэтому здесь намеренно НЕ проверяем
+             * Config::is_disable_change_permanent_password().
+             *
+             * Безопасность сохраняется штатными проверками:
+             *
+             * 1. RustDesk должен быть установлен.
+             * 2. Процесс должен иметь administrative privileges.
+             */
             if args.len() == 2 {
                 if crate::platform::is_installed() && is_root() {
                     if let Err(err) = crate::ipc::set_permanent_password(args[1].to_owned()) {
