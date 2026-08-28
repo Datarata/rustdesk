@@ -430,13 +430,18 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             return None;
         } else if args[0] == "--password" {
+            #[cfg(not(windows))]
             if config::Config::is_disable_change_permanent_password() {
                 println!("Changing permanent password is disabled!");
                 return None;
             }
             if args.len() == 2 {
                 if crate::platform::is_installed() && is_root() {
-                    if let Err(err) = crate::ipc::set_permanent_password(args[1].to_owned()) {
+                    #[cfg(windows)]
+                    let result = crate::ipc::provision_permanent_password(args[1].to_owned());
+                    #[cfg(not(windows))]
+                    let result = crate::ipc::set_permanent_password(args[1].to_owned());
+                    if let Err(err) = result {
                         println!("{err}");
                     } else {
                         println!("Done!");

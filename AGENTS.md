@@ -1,86 +1,101 @@
-# RustDesk Guide
+# RustDesk Repository Guide
 
-## Project Layout
+## What This Project Is
 
-### Directory Structure
-* `src/` Rust app
-* `src/server/` audio / clipboard / input / video / network
-* `src/platform/` platform-specific code
-* `src/ui/` legacy Sciter UI (deprecated)
-* `flutter/` current UI
-* `libs/hbb_common/` config / proto / shared utils
-* `libs/scrap/` screen capture
-* `libs/enigo/` input control
-* `libs/clipboard/` clipboard
-* `libs/hbb_common/src/config.rs` all options
+RustDesk is a cross-platform remote desktop client and host. The repository combines a Rust core, a Flutter UI, platform-native integrations, and several local Rust crates for capture, input, clipboard, protocol, and device support.
 
-### Key Components
-- **Remote Desktop Protocol**: Custom protocol implemented in `src/rendezvous_mediator.rs` for communicating with rustdesk-server
-- **Screen Capture**: Platform-specific screen capture in `libs/scrap/`
-- **Input Handling**: Cross-platform input simulation in `libs/enigo/`
-- **Audio/Video Services**: Real-time audio/video streaming in `src/server/`
-- **File Transfer**: Secure file transfer implementation in `libs/hbb_common/`
+The product can act in both directions:
 
-### UI Architecture
-- **Legacy UI**: Sciter-based (deprecated) - files in `src/ui/`
-- **Modern UI**: Flutter-based - files in `flutter/`
-  - Desktop: `flutter/lib/desktop/`
-  - Mobile: `flutter/lib/mobile/`
-  - Shared: `flutter/lib/common/` and `flutter/lib/models/`
+- as a controller, it connects to a remote peer and renders/controls that session;
+- as a controlled host, it accepts a direct or relayed connection and exposes approved services such as display, input, audio, clipboard, files, terminal, and printing.
 
-## Rust Rules
+RustDesk uses its own rendezvous/relay protocol. `src/rendezvous_mediator.rs` communicates with rustdesk-server, negotiates direct or relayed connectivity, and hands established streams into the client/server session code.
 
-* Avoid `unwrap()` / `expect()` in production code.
-* Exceptions:
+## High-Level Data Flow
 
-  * tests;
-  * lock acquisition where failure means poisoning, not normal control flow.
-* Otherwise prefer `Result` + `?` or explicit handling.
-* Do not ignore errors silently.
-* Avoid unnecessary `.clone()`.
-* Prefer borrowing when practical.
-* Do not add dependencies unless needed.
-* Keep code simple and idiomatic.
+```text
+Flutter widgets/pages
+    -> Dart models and PlatformFFI
+    -> generated flutter_rust_bridge bindings
+    -> src/flutter_ffi.rs and src/flutter.rs
+    -> Rust client/session or host/server services
+    -> hbb_common protobuf messages over direct/relay streams
+    -> remote RustDesk peer
+```
 
-## Tokio Rules
+Incoming host-side traffic is coordinated mainly by `src/server.rs` and `src/server/connection.rs`. Outgoing controller sessions start in `src/client.rs` and run through `src/client/io_loop.rs` and the UI session adapters.
 
-* Assume a Tokio runtime already exists.
-* Never create nested runtimes.
-* Never call `Runtime::block_on()` inside Tokio / async code.
-* Do not hide runtime creation inside helpers or libraries.
-* Do not hold locks across `.await`.
-* Prefer `.await`, `tokio::spawn`, channels.
-* Use `spawn_blocking` or dedicated threads for blocking work.
-* Do not use `std::thread::sleep()` in async code.
+## Repository Map
 
-## Editing Hygiene
+- `src/main.rs`: thin executable entry point.
+- `src/lib.rs`: root module graph and platform/feature gates.
+- `src/core_main.rs`: desktop command-line dispatch, startup, service, and process-mode selection.
+- `src/client.rs`, `src/client/`: outgoing remote sessions, media, file transfer, screenshots, and the client I/O loop.
+- `src/server.rs`, `src/server/`: incoming connections and host-side audio, clipboard, display, input, terminal, printer, and video services.
+- `src/rendezvous_mediator.rs`: registration, hole punching, relay negotiation, and incoming connection mediation.
+- `src/ipc.rs`, `src/ipc/`: communication among RustDesk processes/services on the same machine.
+- `src/flutter.rs`, `src/flutter_ffi.rs`: Rust-side Flutter session state, event streams, and public bridge API.
+- `src/ui*_interface.rs`: adapters shared by UI implementations and session logic.
+- `src/platform/`: OS-specific desktop implementation and native Rust/C++/Objective-C++ glue.
+- `src/privacy_mode/`, `src/whiteboard/`, `src/plugin/`: focused feature subsystems.
+- `src/ui/`: deprecated Sciter UI; do not add new UI here unless the task explicitly targets Sciter.
+- `src/lang/`: Rust UI translation maps.
+- `flutter/`: current desktop, mobile, and web UI.
+- `libs/`: local Cargo workspace crates; see `libs/AGENTS.md`.
+- `res/`: icons and packaging/runtime resources.
+- `.github/workflows/`: authoritative CI and release build recipes.
+- `build.py`: cross-platform packaging/build orchestration, not a lightweight test runner.
 
-* Change only what is required.
-* Prefer the smallest valid diff.
-* Do not refactor unrelated code.
-* Do not make formatting-only changes.
-* Keep naming/style consistent with nearby code.
+More focused instructions live in `src/AGENTS.md`, `src/server/AGENTS.md`, `src/platform/AGENTS.md`, `flutter/AGENTS.md`, and `libs/AGENTS.md`.
+
+## Build and Verification
+
+Native builds have substantial OS and vcpkg dependencies. Prefer the narrowest check that covers the change, and report environment-related failures separately from code failures.
+
+- Rust formatting check: `cargo fmt --all -- --check`
+- Rust crate check: `cargo check -p <crate>`
+- Whole Rust workspace check when the environment is prepared: `cargo check --workspace`
+- Rust tests for a focused crate: `cargo test -p <crate>`
+- Flutter analysis, from `flutter/`: `flutter analyze`
+- Flutter tests, from `flutter/`: `flutter test`
+
+Use `.github/workflows/flutter-build.yml`, `.github/workflows/flutter-ci.yml`, and `build.py` when exact platform packaging flags matter. Do not assume the basic `cargo run` path builds the modern Flutter application.
+
+## Generated and External Artifacts
+
+- `libs/hbb_common/protos/*.proto` are protocol sources. Rust protobuf output is generated by `libs/hbb_common/build.rs` into Cargo's `OUT_DIR`.
+- `src/flutter_ffi.rs` is the source of the Flutter Rust bridge. Files named `bridge_generated*` and `flutter/lib/generated_bridge*` are generated; do not hand-edit them.
+- Regenerate bridge files with the version and command documented in `flutter/run.sh` or `.github/workflows/bridge.yml` when the public FFI surface changes.
+- Avoid committing build output (`target/`, `flutter/build/`) or local generated caches.
+
+## Cross-Cutting Editing Rules
+
+- Make the smallest coherent change and preserve existing platform/feature behavior.
+- Check nearby `#[cfg(...)]` branches before changing shared Rust APIs. A desktop-only type is often unavailable on mobile or web.
+- Treat protocol, authentication, unattended access, permissions, clipboard/file paths, process elevation, and update code as security-sensitive.
+- Do not introduce a new dependency unless the existing workspace cannot reasonably solve the problem.
+- Do not make unrelated formatting or generated-file changes.
+- When a Rust API exposed to Flutter changes, update the Rust source, regenerate the bridge, and update all native/web Dart implementations or conditional imports that share the contract.
+
+## Rust and Tokio Rules
+
+- Avoid `unwrap()` and `expect()` in production code. Tests and poisoned-lock handling are the narrow exceptions.
+- Prefer `Result` with `?` or explicit error handling; do not silently discard meaningful errors.
+- Avoid unnecessary `.clone()` and prefer borrowing where practical.
+- Assume a Tokio runtime already exists. Never create a nested runtime or call `Runtime::block_on()` from async code.
+- Do not hold a lock across `.await`.
+- Use async tasks/channels for async work and `spawn_blocking` or a dedicated thread for blocking work.
+- Never use `std::thread::sleep()` in async code.
 
 ## Localization (`src/lang/*.rs`)
 
-Each file is a `HashMap<key, translation>`. Layout:
+Each language file is a `HashMap<key, translation>`.
 
-* `template.rs` is the master list of every key. **Never edit it** as part of translation work.
-* `en.rs` holds only the keys whose English display text differs from the key itself.
-* Every other file (`de.rs`, `fr.rs`, …) carries the full key set; an untranslated entry has an empty value: `("key", "")`.
-
-### Finding the English source for a key
-
-When filling an empty entry, determine the source English text with this rule:
-
-* If `key` exists in `en.rs` **with a non-empty value**, that value is the source text (look it up in `en.rs`).
-* Otherwise the **key string itself is the source text** (the key is already plain English).
-
-Then translate that source into the file's target language (infer the language from the file's existing non-empty entries / filename).
-
-### Translation hygiene
-
-* Only fill empty values. Never change keys, and never touch existing non-empty translations.
-* Preserve placeholders (`{}`) and escape sequences (`\n`, `\"`) exactly as in the source.
-* Do not translate brand or technical tokens: `RustDesk`, `Socks5`, `TLS`, `UAC`, `Wayland`, `X11`, `TCP`, `UDP`, `2FA`, `RDP`, `D3D`, etc.
-* Copy URL values (e.g. `doc_*` keys) verbatim from `en.rs`.
+- `template.rs` is the master key list. Never edit it as part of translation filling.
+- `en.rs` contains only entries whose displayed English differs from the key.
+- Other language files carry the full key set; an empty value means untranslated.
+- For an empty value, use the non-empty `en.rs` value when present; otherwise use the key itself as English source text.
+- Only fill empty values. Never change keys or existing non-empty translations.
+- Preserve placeholders and escape sequences exactly, including `{}`, `\n`, and `\"`.
+- Keep brands and technical tokens unchanged: RustDesk, Socks5, TLS, UAC, Wayland, X11, TCP, UDP, 2FA, RDP, D3D, and similar terms.
+- Copy URL values such as `doc_*` entries verbatim from `en.rs`.

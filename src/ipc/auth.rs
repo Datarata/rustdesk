@@ -784,6 +784,17 @@ impl ConnectionTmpl<parity_tokio_ipc::Connection> {
         }
     }
 
+    pub(super) fn is_privileged_password_provisioning_peer(&self) -> bool {
+        let Some(peer_pid) = self.peer_pid() else {
+            return false;
+        };
+        let peer_is_system =
+            crate::platform::windows::is_process_running_as_system(peer_pid).unwrap_or(false);
+        let peer_is_elevated =
+            crate::platform::windows::is_elevated(Some(peer_pid)).unwrap_or(false);
+        is_allowed_windows_password_provisioning_peer(peer_is_system, peer_is_elevated)
+    }
+
     fn server_authorization_status(
         &self,
     ) -> (
@@ -907,6 +918,15 @@ impl ConnectionTmpl<parity_tokio_ipc::Connection> {
     }
 }
 
+#[cfg(windows)]
+#[inline]
+fn is_allowed_windows_password_provisioning_peer(
+    peer_is_system: bool,
+    peer_is_elevated: bool,
+) -> bool {
+    peer_is_system || peer_is_elevated
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -938,6 +958,20 @@ mod tests {
             false,
             None,
             Some(1)
+        ));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_windows_password_provisioning_requires_privileged_peer() {
+        assert!(super::is_allowed_windows_password_provisioning_peer(
+            true, false
+        ));
+        assert!(super::is_allowed_windows_password_provisioning_peer(
+            false, true
+        ));
+        assert!(!super::is_allowed_windows_password_provisioning_peer(
+            false, false
         ));
     }
 

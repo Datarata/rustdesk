@@ -17,7 +17,7 @@ use crate::{
 use bytes::Bytes;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::ClipboardFile;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use hbb_common::anyhow;
 use hbb_common::{
     allow_err, bail, bytes,
@@ -334,6 +334,10 @@ pub enum Data {
     UserSid(Option<u32>),
     OnlineStatus(Option<(i64, bool)>),
     Config((String, Option<String>)),
+    #[cfg(target_os = "windows")]
+    ProvisionPermanentPassword(String),
+    #[cfg(target_os = "windows")]
+    ProvisionPermanentPasswordResult(bool),
     Options(Option<HashMap<String, String>>),
     NatType(Option<i32>),
     ConfirmedKey(Option<(Vec<u8>, Vec<u8>)>),
@@ -911,6 +915,31 @@ async fn handle(data: Data, stream: &mut Connection) {
                 }
             }
         },
+        #[cfg(target_os = "windows")]
+        Data::ProvisionPermanentPassword(password) => {
+            let installed = crate::platform::is_installed();
+            let privileged_peer = stream.is_privileged_password_provisioning_peer();
+            let updated = if installed && privileged_peer {
+                provision_permanent_password_storage(&password).unwrap_or_else(|err| {
+                    log::error!("Failed to provision permanent password storage: {err}");
+                    false
+                })
+            } else {
+                log::warn!(
+                    "Rejected permanent password provisioning: installed={}, privileged_peer={}",
+                    installed,
+                    privileged_peer
+                );
+                false
+            };
+            allow_err!(
+                stream
+                    .send(&Data::ProvisionPermanentPasswordResult(updated))
+                    .await
+            );
+        }
+        #[cfg(target_os = "windows")]
+        Data::ProvisionPermanentPasswordResult(_) => {}
         Data::Options(value) => match value {
             None => {
                 let v = Config::get_options();
@@ -1596,6 +1625,49 @@ pub fn set_permanent_password(v: String) -> ResultType<()> {
         Ok(())
     } else {
         bail!("Changing permanent password was rejected by daemon");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn provision_permanent_password_storage(password_value: &str) -> ResultType<bool> {
+    let salt = Config::get_salt();
+    if password_value.is_empty() {
+        return Config::set_permanent_password_storage_for_sync("", &salt).map(|_| true);
+    }
+
+    let h1 = config::compute_permanent_password_h1(password_value, &salt);
+    let hashed_storage = "00".to_owned()
+        + &hbb_common::sodiumoxide::base64::encode(
+            &h1,
+            hbb_common::sodiumoxide::base64::Variant::Original,
+        );
+    let encrypted = password::symmetric_crypt(hashed_storage.as_bytes(), true)
+        .map_err(|_| anyhow!("Failed to encrypt permanent password storage"))?;
+    let storage = "01".to_owned()
+        + &hbb_common::sodiumoxide::base64::encode(
+            encrypted,
+            hbb_common::sodiumoxide::base64::Variant::Original,
+        );
+    Config::set_permanent_password_storage_for_sync(&storage, &salt).map(|_| true)
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::main(flavor = "current_thread")]
+pub async fn provision_permanent_password(v: String) -> ResultType<()> {
+    let ms_timeout = 1_000;
+    let mut c = connect(ms_timeout, "").await?;
+    c.send(&Data::ProvisionPermanentPassword(v)).await?;
+    match c.next_timeout(ms_timeout).await? {
+        Some(Data::ProvisionPermanentPasswordResult(true)) => {
+            if let Err(err) = sync_permanent_password_storage_from_daemon_async().await {
+                log::warn!("Failed to sync provisioned permanent password storage: {err}");
+            }
+            Ok(())
+        }
+        Some(Data::ProvisionPermanentPasswordResult(false)) => {
+            bail!("Permanent password provisioning was rejected by daemon")
+        }
+        _ => bail!("Invalid permanent password provisioning response from daemon"),
     }
 }
 
