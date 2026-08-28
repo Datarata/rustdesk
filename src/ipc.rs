@@ -1642,7 +1642,7 @@ fn provision_permanent_password_storage(password_value: &str) -> ResultType<bool
             hbb_common::sodiumoxide::base64::Variant::Original,
         );
     let encrypted = password::symmetric_crypt(hashed_storage.as_bytes(), true)
-        .map_err(|_| anyhow!("Failed to encrypt permanent password storage"))?;
+        .map_err(|_| anyhow::anyhow!("Failed to encrypt permanent password storage"))?;
     let storage = "01".to_owned()
         + &hbb_common::sodiumoxide::base64::encode(
             encrypted,
