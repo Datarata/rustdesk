@@ -1629,7 +1629,7 @@ pub fn set_permanent_password(v: String) -> ResultType<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn provision_permanent_password_storage(password_value: &str) -> ResultType<bool> {
+pub(crate) fn provision_permanent_password_storage(password_value: &str) -> ResultType<bool> {
     let salt = Config::get_salt();
     if password_value.is_empty() {
         return Config::set_permanent_password_storage_for_sync("", &salt).map(|_| true);
@@ -1654,19 +1654,54 @@ fn provision_permanent_password_storage(password_value: &str) -> ResultType<bool
 #[cfg(target_os = "windows")]
 #[tokio::main(flavor = "current_thread")]
 pub async fn provision_permanent_password(v: String) -> ResultType<()> {
-    let ms_timeout = 1_000;
-    let mut c = connect(ms_timeout, "").await?;
-    c.send(&Data::ProvisionPermanentPassword(v)).await?;
-    match c.next_timeout(ms_timeout).await? {
-        Some(Data::ProvisionPermanentPasswordResult(true)) => {
-            if let Err(err) = sync_permanent_password_storage_from_daemon_async().await {
-                log::warn!("Failed to sync provisioned permanent password storage: {err}");
+    let accepted =
+        match request_permanent_password_provisioning(v.clone(), crate::POSTFIX_SERVICE).await {
+            Ok(accepted) => accepted,
+            Err(service_err) => {
+                log::warn!(
+                "Password provisioning service IPC unavailable, trying main daemon: {service_err}"
+            );
+                request_permanent_password_provisioning(v, "").await?
             }
-            Ok(())
+        };
+    if !accepted {
+        bail!("Permanent password provisioning was rejected by service");
+    }
+    if let Err(err) = sync_permanent_password_storage_from_daemon_async().await {
+        log::warn!("Failed to sync provisioned permanent password storage: {err}");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) async fn provision_permanent_password_on_main_daemon(v: String) -> ResultType<bool> {
+    request_permanent_password_provisioning(v, "").await
+}
+
+#[cfg(target_os = "windows")]
+async fn request_permanent_password_provisioning(v: String, postfix: &str) -> ResultType<bool> {
+    const PROVISIONING_IPC_TIMEOUT_MS: u64 = 15_000;
+    const PROVISIONING_CONNECT_ATTEMPTS: usize = 10;
+    const PROVISIONING_CONNECT_RETRY_MS: u64 = 500;
+    let mut attempt = 0;
+    let mut c = loop {
+        match connect(PROVISIONING_CONNECT_RETRY_MS, postfix).await {
+            Ok(connection) => break connection,
+            Err(err) => {
+                attempt += 1;
+                if attempt >= PROVISIONING_CONNECT_ATTEMPTS {
+                    return Err(err);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    PROVISIONING_CONNECT_RETRY_MS,
+                ))
+                .await;
+            }
         }
-        Some(Data::ProvisionPermanentPasswordResult(false)) => {
-            bail!("Permanent password provisioning was rejected by daemon")
-        }
+    };
+    c.send(&Data::ProvisionPermanentPassword(v)).await?;
+    match c.next_timeout(PROVISIONING_IPC_TIMEOUT_MS).await? {
+        Some(Data::ProvisionPermanentPasswordResult(updated)) => Ok(updated),
         _ => bail!("Invalid permanent password provisioning response from daemon"),
     }
 }

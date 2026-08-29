@@ -784,7 +784,7 @@ impl ConnectionTmpl<parity_tokio_ipc::Connection> {
         }
     }
 
-    pub(super) fn is_privileged_password_provisioning_peer(&self) -> bool {
+    pub(crate) fn is_privileged_password_provisioning_peer(&self) -> bool {
         let Some(peer_pid) = self.peer_pid() else {
             return false;
         };

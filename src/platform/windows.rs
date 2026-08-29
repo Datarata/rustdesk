@@ -731,6 +731,48 @@ async fn run_service(_arguments: Vec<OsString>) -> ResultType<()> {
                                     }
                                 }
                             }
+                            ipc::Data::ProvisionPermanentPassword(password) => {
+                                let installed = crate::platform::is_installed();
+                                let privileged_peer =
+                                    stream.is_privileged_password_provisioning_peer();
+                                let updated = if installed && privileged_peer {
+                                    match ipc::provision_permanent_password_on_main_daemon(
+                                        password.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(updated) => updated,
+                                        Err(err) => {
+                                            log::error!(
+                                                "Failed to relay permanent password provisioning to main daemon: {err}"
+                                            );
+                                            match ipc::provision_permanent_password_storage(
+                                                &password,
+                                            ) {
+                                                Ok(updated) => updated,
+                                                Err(storage_err) => {
+                                                    log::error!(
+                                                        "Failed to provision permanent password in service: {storage_err}"
+                                                    );
+                                                    false
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    log::warn!(
+                                        "Rejected service permanent password provisioning: installed={}, privileged_peer={}",
+                                        installed,
+                                        privileged_peer
+                                    );
+                                    false
+                                };
+                                allow_err!(
+                                    stream
+                                        .send(&ipc::Data::ProvisionPermanentPasswordResult(updated))
+                                        .await
+                                );
+                            }
                             _ => {}
                         }
                     }

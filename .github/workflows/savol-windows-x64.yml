@@ -110,6 +110,9 @@ jobs:
           grep -F 'stream.is_privileged_password_provisioning_peer()' src/ipc.rs
           grep -F 'fn provision_permanent_password_storage' src/ipc.rs
           grep -F 'Config::set_permanent_password_storage_for_sync' src/ipc.rs
+          grep -F 'Password provisioning service IPC unavailable' src/ipc.rs
+          grep -F 'ipc::Data::ProvisionPermanentPassword(password)' src/platform/windows.rs
+          grep -F 'stream.is_privileged_password_provisioning_peer()' src/platform/windows.rs
           grep -F 'test_windows_password_provisioning_requires_privileged_peer' src/ipc/auth.rs
 
           echo "Privileged password provisioning patch OK."
@@ -405,6 +408,7 @@ jobs:
           $Core = Get-Content '.\src\core_main.rs' -Raw
           $Ipc = Get-Content '.\src\ipc.rs' -Raw
           $Auth = Get-Content '.\src\ipc\auth.rs' -Raw
+          $Windows = Get-Content '.\src\platform\windows.rs' -Raw
 
           $Checks = @(
             @($Core, '#[cfg(not(windows))]'),
@@ -413,6 +417,9 @@ jobs:
             @($Ipc, 'stream.is_privileged_password_provisioning_peer()'),
             @($Ipc, 'fn provision_permanent_password_storage'),
             @($Ipc, 'Config::set_permanent_password_storage_for_sync'),
+            @($Ipc, 'Password provisioning service IPC unavailable'),
+            @($Windows, 'ipc::Data::ProvisionPermanentPassword(password)'),
+            @($Windows, 'stream.is_privileged_password_provisioning_peer()'),
             @($Auth, 'test_windows_password_provisioning_requires_privileged_peer')
           )
 
