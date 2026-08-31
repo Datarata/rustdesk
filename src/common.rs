@@ -2,10 +2,7 @@ use std::{
     collections::HashMap,
     future::Future,
     net::{SocketAddr, ToSocketAddrs},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex, RwLock,
-    },
+    sync::{Arc, Mutex, RwLock},
     task::Poll,
 };
 
@@ -67,12 +64,6 @@ pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
 const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
-
-static SAVOL_MANAGED_PROFILE_LOADED: AtomicBool = AtomicBool::new(false);
-
-pub fn is_savol_managed_client() -> bool {
-    SAVOL_MANAGED_PROFILE_LOADED.load(Ordering::Acquire)
-}
 
 pub mod input {
     pub const MOUSE_TYPE_MOVE: i32 = 0;
@@ -2097,6 +2088,14 @@ fn load_savol_profile() {
      * Все параметры ниже загружаются как Override Settings.
      * Пользовательские настройки не должны иметь над ними приоритет.
      */
+    match config::APP_NAME.write() {
+        Ok(mut app_name) => *app_name = "SavolDesk".to_owned(),
+        Err(err) => {
+            log::error!("Failed to set the SavolDesk application name: {err}");
+            return;
+        }
+    }
+
     let settings = json!({
         // ============================================================
         // SAVOL RUSTDESK SERVER
@@ -2231,7 +2230,6 @@ fn load_savol_profile() {
     match config::OVERWRITE_SETTINGS.write() {
         Ok(mut overwrite_settings) => {
             overwrite_settings.insert("allow-hide-cm".to_owned(), "Y".to_owned());
-            SAVOL_MANAGED_PROFILE_LOADED.store(true, Ordering::Release);
         }
         Err(err) => log::error!("Failed to enable the Savol managed profile: {err}"),
     }

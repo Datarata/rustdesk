@@ -1,4 +1,4 @@
-name: Savol RustDesk Windows x64
+name: SavolDesk Windows x64
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 # Если нажать Run несколько раз, предыдущая незавершённая сборка
 # этой же ветки будет отменена.
 concurrency:
-  group: savol-rustdesk-windows-x64-${{ github.ref }}
+  group: savoldesk-windows-x64-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -60,7 +60,7 @@ jobs:
       # workflow никогда не должен случайно собирать master.
       # --------------------------------------------------------
 
-      - name: Checkout Savol RustDesk 1.4.9
+      - name: Checkout SavolDesk 1.4.9
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: savol-1.4.9
@@ -325,7 +325,7 @@ jobs:
   # ============================================================
 
   build-windows-x64:
-    name: Build Savol RustDesk Windows x64
+    name: Build SavolDesk Windows x64
 
     needs:
       - generate-bridge
@@ -365,7 +365,7 @@ jobs:
       # BUILD исходники всё равно будут savol-1.4.9.
       # --------------------------------------------------------
 
-      - name: Checkout Savol RustDesk 1.4.9
+      - name: Checkout SavolDesk 1.4.9
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           ref: savol-1.4.9
@@ -572,7 +572,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          prefix-key: savol-rustdesk-windows-x64
+          prefix-key: savoldesk-windows-x64
 
 
       # --------------------------------------------------------
@@ -644,7 +644,7 @@ jobs:
       # --vram    -> аппаратный GPU/VRAM path
       # --------------------------------------------------------
 
-      - name: Build Savol RustDesk
+      - name: Build SavolDesk
         shell: powershell
         run: |
           python3 `
@@ -658,6 +658,10 @@ jobs:
           Move-Item `
             ".\flutter\build\windows\x64\runner\Release" `
             ".\rustdesk"
+
+          Move-Item `
+            ".\rustdesk\rustdesk.exe" `
+            ".\rustdesk\SavolDesk.exe"
 
 
       # --------------------------------------------------------
@@ -758,7 +762,7 @@ jobs:
       #
       # Получится:
       #
-      # Savol-RustDesk-1.4.9-x86_64.exe
+      # SavolDesk-1.4.9-x86_64.exe
       # --------------------------------------------------------
 
       - name: Build self-extracted executable
@@ -778,7 +782,7 @@ jobs:
             ./generate.py \
             -f ../../rustdesk/ \
             -o . \
-            -e ../../rustdesk/rustdesk.exe
+            -e ../../rustdesk/SavolDesk.exe
 
           popd
 
@@ -786,7 +790,7 @@ jobs:
 
           mv \
             ./target/release/rustdesk-portable-packer.exe \
-            ./dist/Savol-RustDesk-1.4.9-x86_64.exe
+            ./dist/SavolDesk-1.4.9-x86_64.exe
 
 
       # --------------------------------------------------------
@@ -798,7 +802,7 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "============================================"
-          Write-Host " SAVOL RUSTDESK BUILD COMPLETE"
+          Write-Host " SAVOLDESK BUILD COMPLETE"
           Write-Host "============================================"
           Write-Host ""
 
@@ -815,16 +819,16 @@ jobs:
       #
       # Внутри:
       #
-      # Savol-RustDesk-1.4.9-x86_64.exe
+      # SavolDesk-1.4.9-x86_64.exe
       # raw/
       # --------------------------------------------------------
 
-      - name: Upload Savol RustDesk Windows x64
+      - name: Upload SavolDesk Windows x64
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: Savol-RustDesk-Windows-x64
+          name: SavolDesk-Windows-x64
           retention-days: 14
           if-no-files-found: error
           path: |
-            ./dist/Savol-RustDesk-1.4.9-x86_64.exe
+            ./dist/SavolDesk-1.4.9-x86_64.exe
             ./dist/raw/
