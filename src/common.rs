@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     future::Future,
     net::{SocketAddr, ToSocketAddrs},
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, RwLock,
+    },
     task::Poll,
 };
 
@@ -64,6 +67,12 @@ pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
 const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
+
+static SAVOL_MANAGED_PROFILE_LOADED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_savol_managed_client() -> bool {
+    SAVOL_MANAGED_PROFILE_LOADED.load(Ordering::Acquire)
+}
 
 pub mod input {
     pub const MOUSE_TYPE_MOVE: i32 = 0;
@@ -2215,6 +2224,17 @@ fn load_savol_profile() {
         &map_builtin_settings,
         true,
     );
+
+    // `allow-hide-cm` is an internal RustDesk option and is not part of the
+    // Custom Client advanced-settings key list. Apply it explicitly so the
+    // managed Savol agent keeps the connection manager window hidden.
+    match config::OVERWRITE_SETTINGS.write() {
+        Ok(mut overwrite_settings) => {
+            overwrite_settings.insert("allow-hide-cm".to_owned(), "Y".to_owned());
+            SAVOL_MANAGED_PROFILE_LOADED.store(true, Ordering::Release);
+        }
+        Err(err) => log::error!("Failed to enable the Savol managed profile: {err}"),
+    }
 }
 
 pub fn load_custom_client() {
