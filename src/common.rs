@@ -2081,6 +2081,45 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
 }
 
 #[cfg(target_os = "windows")]
+const SAVOLDESK_ID_BASE: u32 = 1_000_000_000;
+
+#[cfg(target_os = "windows")]
+fn legacy_mac_device_id() -> Option<u32> {
+    let mac = hbb_common::mac_address::get_mac_address().ok().flatten()?;
+    let mut id = 0u32;
+    for byte in &mac.bytes()[2..] {
+        id = (id << 8) | (*byte as u32);
+    }
+    Some(id & 0x1FFF_FFFF)
+}
+
+#[cfg(target_os = "windows")]
+fn savoldesk_device_id(legacy_id: u32) -> String {
+    (SAVOLDESK_ID_BASE + legacy_id).to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn migrate_savoldesk_device_id() {
+    let Some(legacy_id) = legacy_mac_device_id() else {
+        log::warn!("Unable to derive the SavolDesk device ID from the MAC address");
+        return;
+    };
+
+    if config::Config::get_id() != legacy_id.to_string() {
+        return;
+    }
+
+    // RustDesk derives its default ID solely from the MAC address. SavolDesk has
+    // a separate config directory and signing key, so retaining that ID would
+    // make it collide with the official RustDesk client on the same computer.
+    // Move only the legacy MAC-derived ID into SavolDesk's reserved 10-digit
+    // range; manually assigned or already-migrated IDs are left untouched.
+    config::Config::set_id(&savoldesk_device_id(legacy_id));
+    config::Config::set_key_confirmed(false);
+    log::info!("Migrated legacy MAC-derived ID to a SavolDesk-specific device ID");
+}
+
+#[cfg(target_os = "windows")]
 fn load_savol_profile() {
     /*
      * Savol managed RustDesk agent.
@@ -2095,6 +2134,8 @@ fn load_savol_profile() {
             return;
         }
     }
+
+    migrate_savoldesk_device_id();
 
     let settings = json!({
         // ============================================================
@@ -2815,6 +2856,13 @@ mod tests {
         time::{interval, interval_at, sleep, Duration, Instant, Interval},
     };
     use std::collections::HashSet;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn savoldesk_device_id_uses_a_separate_range_from_legacy_mac_ids() {
+        assert_eq!(savoldesk_device_id(0), "1000000000");
+        assert_eq!(savoldesk_device_id(0x1FFF_FFFF), "1536870911");
+    }
 
     #[inline]
     fn get_timestamp_secs() -> u128 {
