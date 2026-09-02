@@ -2,6 +2,12 @@ name: SavolDesk Windows x64
 
 on:
   workflow_dispatch:
+    inputs:
+      include_raw_build:
+        description: 'Attach the unpacked diagnostic build in addition to the installer'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -494,6 +500,54 @@ jobs:
           channel: stable
           flutter-version: "3.24.5"
           architecture: x64
+          # Сохраняет Flutter SDK и pub cache между hosted-runner builds.
+          cache: true
+
+
+      # --------------------------------------------------------
+      # Получаем digest конкретного RustDesk engine asset.
+      # Кэш ниже использует digest, поэтому новая версия main
+      # автоматически загрузится и не будет подменена старой.
+      # --------------------------------------------------------
+
+      - name: Resolve RustDesk engine release
+        id: engine_release
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $Headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = 'application/vnd.github+json'
+          }
+
+          $Release = Invoke-RestMethod `
+            -Headers $Headers `
+            -Uri 'https://api.github.com/repos/rustdesk/engine/releases/tags/main'
+
+          $Asset = $Release.assets | Where-Object {
+            $_.name -eq 'windows-x64-release.zip'
+          } | Select-Object -First 1
+
+          if ($null -eq $Asset) {
+            throw 'RustDesk Windows x64 engine asset was not found.'
+          }
+
+          $Identity = $Asset.digest
+          if ([string]::IsNullOrWhiteSpace($Identity)) {
+            $Identity = "$($Asset.id)-$($Asset.updated_at)"
+          }
+
+          "asset_url=$($Asset.browser_download_url)" >> $env:GITHUB_OUTPUT
+          "cache_key=savoldesk-engine-windows-x64-$Identity" >> $env:GITHUB_OUTPUT
+
+
+      - name: Cache RustDesk Flutter engine archive
+        id: engine_cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ./windows-x64-release.zip
+          key: ${{ steps.engine_release.outputs.cache_key }}
 
 
       # --------------------------------------------------------
@@ -503,14 +557,18 @@ jobs:
 
       - name: Replace Flutter engine with RustDesk engine
         shell: powershell
+        env:
+          ENGINE_URL: ${{ steps.engine_release.outputs.asset_url }}
         run: |
           flutter doctor -v
 
           flutter precache --windows
 
-          Invoke-WebRequest `
-            -Uri "https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip" `
-            -OutFile "windows-x64-release.zip"
+          if ('${{ steps.engine_cache.outputs.cache-hit }}' -ne 'true') {
+            Invoke-WebRequest `
+              -Uri $env:ENGINE_URL `
+              -OutFile "windows-x64-release.zip"
+          }
 
           Expand-Archive `
             -Path "windows-x64-release.zip" `
@@ -735,13 +793,15 @@ jobs:
 
 
       # --------------------------------------------------------
-      # Сохраняем raw build.
+      # Сохраняем raw build только по явному запросу.
       #
       # Это полезно для диагностики, если portable packer
-      # когда-нибудь сломается.
+      # когда-нибудь сломается, но обычно добавляет сотни МБ
+      # к времени создания и выгрузки artifact.
       # --------------------------------------------------------
 
       - name: Prepare raw build
+        if: ${{ inputs.include_raw_build }}
         shell: powershell
         run: |
           New-Item `
@@ -755,6 +815,19 @@ jobs:
             ".\dist\raw\" `
             -Recurse `
             -Force
+
+
+      # --------------------------------------------------------
+      # Кэш Python packages portable packer. Его ключ привязан
+      # к requirements.txt, поэтому смена зависимостей не может
+      # восстановить устаревший набор пакетов.
+      # --------------------------------------------------------
+
+      - name: Cache portable packer Python packages
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ./.pip-cache
+          key: savoldesk-portable-pip-${{ runner.os }}-${{ hashFiles('libs/portable/requirements.txt') }}
 
 
       # --------------------------------------------------------
@@ -776,6 +849,7 @@ jobs:
           pushd ./libs/portable
 
           pip3 install \
+            --cache-dir ../../.pip-cache \
             -r requirements.txt
 
           python3 \
@@ -815,12 +889,10 @@ jobs:
 
 
       # --------------------------------------------------------
-      # Один итоговый GitHub Artifact.
+      # Основной GitHub Artifact: только готовый установщик.
       #
-      # Внутри:
-      #
-      # SavolDesk-1.4.9-x86_64.exe
-      # raw/
+      # Это заметно быстрее, чем передавать raw bundle при
+      # каждой штатной сборке.
       # --------------------------------------------------------
 
       - name: Upload SavolDesk Windows x64
@@ -829,6 +901,19 @@ jobs:
           name: SavolDesk-Windows-x64
           retention-days: 14
           if-no-files-found: error
-          path: |
-            ./dist/SavolDesk-1.4.9-x86_64.exe
-            ./dist/raw/
+          path: ./dist/SavolDesk-1.4.9-x86_64.exe
+
+
+      # --------------------------------------------------------
+      # Диагностический raw bundle доступен только для ручного
+      # запуска workflow с включённым include_raw_build.
+      # --------------------------------------------------------
+
+      - name: Upload SavolDesk raw diagnostic build
+        if: ${{ inputs.include_raw_build }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SavolDesk-Windows-x64-raw
+          retention-days: 3
+          if-no-files-found: error
+          path: ./dist/raw/
