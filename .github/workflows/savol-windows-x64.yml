@@ -607,8 +607,16 @@ jobs:
 
           cd "${FLUTTER_ROOT}"
 
-          git apply \
-            flutter_3.24.4_dropdown_menu_enableFilter.diff
+          patch_file="flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+          if git apply --check "${patch_file}"; then
+            git apply "${patch_file}"
+          elif git apply --reverse --check "${patch_file}"; then
+            echo "Flutter patch is already present in the restored cache."
+          else
+            echo "Flutter patch does not match this SDK."
+            exit 1
+          fi
 
 
       # --------------------------------------------------------
