@@ -692,6 +692,26 @@ impl Client {
         log::info!("peer address: {}, timeout: {}", peer, connect_timeout);
         let start = std::time::Instant::now();
 
+        // A SavolDesk peer on the corporate WireGuard segment can receive the
+        // PunchHoleSent message faster than the remote host releases its
+        // rendezvous TCP socket and starts listening on that same port. A
+        // direct connect in that tiny interval succeeds against the temporary
+        // socket, but is reset once the host switches to its listener.
+        //
+        // Keep the workaround strictly scoped to SavolDesk's WireGuard range;
+        // ordinary RustDesk clients and all other networks retain upstream
+        // timing and behaviour.
+        if should_wait_for_savoldesk_wireguard_listener(local_addr, peer)
+            && !interface.is_force_relay()
+        {
+            log::debug!(
+                "Waiting briefly for SavolDesk WireGuard peer listener: {} -> {}",
+                local_addr,
+                peer
+            );
+            hbb_common::sleep(0.1).await;
+        }
+
         let mut connect_futures = Vec::new();
         let fut = connect_tcp_local(peer, Some(local_addr), connect_timeout);
         connect_futures.push(
@@ -1055,6 +1075,31 @@ impl Client {
         });
 
         None
+    }
+}
+
+fn should_wait_for_savoldesk_wireguard_listener(local_addr: SocketAddr, peer: SocketAddr) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if crate::common::get_app_name() != "SavolDesk" {
+            return false;
+        }
+
+        let is_savol_wireguard_address = |address: SocketAddr| match address {
+            SocketAddr::V4(address) => {
+                let octets = address.ip().octets();
+                octets[0] == 100 && octets[1] == 109
+            }
+            SocketAddr::V6(_) => false,
+        };
+
+        is_savol_wireguard_address(local_addr) && is_savol_wireguard_address(peer)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (local_addr, peer);
+        false
     }
 }
 
