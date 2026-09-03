@@ -701,7 +701,7 @@ impl Client {
         // Keep the workaround strictly scoped to SavolDesk's WireGuard range;
         // ordinary RustDesk clients and all other networks retain upstream
         // timing and behaviour.
-        if should_wait_for_savoldesk_wireguard_listener(local_addr, peer)
+        if crate::common::is_savoldesk_wireguard_peer(local_addr, peer)
             && !interface.is_force_relay()
         {
             log::debug!(
@@ -1075,31 +1075,6 @@ impl Client {
         });
 
         None
-    }
-}
-
-fn should_wait_for_savoldesk_wireguard_listener(local_addr: SocketAddr, peer: SocketAddr) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        if crate::common::get_app_name() != "SavolDesk" {
-            return false;
-        }
-
-        let is_savol_wireguard_address = |address: SocketAddr| match address {
-            SocketAddr::V4(address) => {
-                let octets = address.ip().octets();
-                octets[0] == 100 && octets[1] == 109
-            }
-            SocketAddr::V6(_) => false,
-        };
-
-        is_savol_wireguard_address(local_addr) && is_savol_wireguard_address(peer)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (local_addr, peer);
-        false
     }
 }
 

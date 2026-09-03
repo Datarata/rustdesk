@@ -708,9 +708,22 @@ impl RendezvousMediator {
         let mut socket = {
             let socket = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
             let local_addr = socket.local_addr();
-            // key important here for punch hole to tell my gateway incoming peer is safe.
-            // it can not be async here, because local_addr can not be reused, we must close the connection before use it again.
-            allow_err!(socket_client::connect_tcp_local(peer_addr, Some(local_addr), 30).await);
+            if crate::common::is_savoldesk_wireguard_peer(local_addr, peer_addr) {
+                // On the corporate WireGuard network this reverse temporary
+                // connection can win the race against the real listener and
+                // leave the controller attached to a socket that is about to
+                // be dropped. The tunnel is already directly routable, so no
+                // NAT-opening connection is needed here.
+                log::debug!(
+                    "Skipping temporary TCP punch for SavolDesk WireGuard peer {:?}",
+                    peer_addr
+                );
+            } else {
+                // Key important here for punch hole to tell my gateway an
+                // incoming peer is safe. It cannot be async because
+                // local_addr must be reusable once this socket is closed.
+                allow_err!(socket_client::connect_tcp_local(peer_addr, Some(local_addr), 30).await);
+            }
             socket
         };
         let mut msg_out = Message::new();

@@ -1009,6 +1009,36 @@ pub fn is_rustdesk() -> bool {
     hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")
 }
 
+/// Returns true for a direct SavolDesk connection inside the corporate
+/// WireGuard address range. The range is intentionally scoped to the managed
+/// Windows build so upstream RustDesk networking remains unchanged.
+#[inline]
+pub fn is_savoldesk_wireguard_peer(local_addr: SocketAddr, peer_addr: SocketAddr) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if get_app_name() != "SavolDesk" {
+            return false;
+        }
+
+        let is_corporate_wireguard_address = |address: SocketAddr| match address {
+            SocketAddr::V4(address) => {
+                let octets = address.ip().octets();
+                octets[0] == 100 && octets[1] == 109
+            }
+            SocketAddr::V6(_) => false,
+        };
+
+        is_corporate_wireguard_address(local_addr)
+            && is_corporate_wireguard_address(peer_addr)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (local_addr, peer_addr);
+        false
+    }
+}
+
 #[inline]
 pub fn get_uri_prefix() -> String {
     format!("{}://", get_app_name().to_lowercase())
