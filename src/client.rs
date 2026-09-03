@@ -1860,6 +1860,7 @@ impl LoginConfigHandler {
         self.force_relay =
             config::option2bool("force-always-relay", &self.get_option("force-always-relay"))
                 || force_relay
+                || crate::common::is_savoldesk_managed_client()
                 || use_ws()
                 || Config::is_proxy();
         if let Some((real_id, server, key)) = &self.other_server {

@@ -1009,6 +1009,24 @@ pub fn is_rustdesk() -> bool {
     hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")
 }
 
+/// The managed SavolDesk Windows client intentionally uses the relay first.
+///
+/// This avoids unreliable direct TCP/UDP hole punching on the corporate NAT
+/// while leaving the upstream RustDesk product and all other platforms
+/// unchanged.
+#[inline]
+pub fn is_savoldesk_managed_client() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        hbb_common::config::APP_NAME.read().unwrap().eq("SavolDesk")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 #[inline]
 pub fn get_uri_prefix() -> String {
     format!("{}://", get_app_name().to_lowercase())
